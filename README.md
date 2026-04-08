@@ -10,8 +10,10 @@ Python 3.10+ · PostgreSQL · FastAPI · Docker · ldap3
 
 ## Structure
 
- part1/    # File Archiving System — CLI, PostgreSQL, FastAPI, Dashboard
- part2/    # LDAP Query Tool — OpenLDAP, group/member resolution
+ part1 - # File Archiving System — CLI, PostgreSQL, FastAPI, Dashboard
+ 
+ 
+ part2 - # LDAP Query Tool — OpenLDAP, group/member resolution
 
 ## Quick Start
 
