@@ -14,19 +14,39 @@ if str(PART_1_DIR) not in sys.path:
 # We do NOT provide a `psycopg2.connect` implementation here to avoid
 # falsely reporting an available DB.
 if 'psycopg2' not in sys.modules:
+    from pathlib import Path
+    import sys
     import types
+    import pytest
 
-    psy = types.ModuleType('psycopg2')
-    ext = types.ModuleType('psycopg2.extensions')
-    ext.connection = object
-    ext.cursor = object
-    psy.extensions = ext
-    sys.modules['psycopg2'] = psy
-    sys.modules['psycopg2.extensions'] = ext
+    # Make part-1 importable during tests
+    PART_1_DIR = Path(__file__).resolve().parents[1]
+    if str(PART_1_DIR) not in sys.path:
+        sys.path.insert(0, str(PART_1_DIR))
 
 
-def pytest_configure(config):
-    config.addinivalue_line(
-        "markers",
-        "integration: marks tests that require a live PostgreSQL connection",
-    )
+    # Provide a minimal psycopg2 shim so modules that reference psycopg2 at
+    # import-time can be imported during test collection on machines without the
+    # real package. We expose OperationalError so code that catches it continues
+    # to work in tests.
+    if 'psycopg2' not in sys.modules:
+        psy = types.ModuleType('psycopg2')
+
+        class OperationalError(Exception):
+            pass
+
+        psy.OperationalError = OperationalError
+
+        ext = types.ModuleType('psycopg2.extensions')
+        ext.connection = object
+        ext.cursor = object
+        psy.extensions = ext
+        sys.modules['psycopg2'] = psy
+        sys.modules['psycopg2.extensions'] = ext
+
+
+    def pytest_configure(config):
+        config.addinivalue_line(
+            "markers",
+            "integration: marks tests that require a live PostgreSQL connection",
+        )
