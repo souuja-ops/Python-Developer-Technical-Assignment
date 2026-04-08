@@ -1,0 +1,594 @@
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Archive Dashboard</title>
+
+    <style>
+      /* ── Base layout / typography ───────────────────────────────────── */
+      :root {
+        --bg: #ffffff;
+        --text: #0f172a;
+        --muted: #475569;
+        --border: #e2e8f0;
+        --card-bg: #f8fafc;
+        --row-alt: #f8fafc;
+        --row-hover: #eef2ff;
+        --row-selected: #dbeafe;
+
+        --green: #16a34a;
+        --amber: #b45309;
+        --red: #dc2626;
+        --grey: #64748b;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial,
+          sans-serif;
+      }
+
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 20px;
+      }
+
+      /* ── Header ─────────────────────────────────────────────────────── */
+      .header {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 16px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 16px 18px;
+        background: #ffffff;
+      }
+
+      .title {
+        font-size: 20px;
+        font-weight: 700;
+      }
+
+      .header-right {
+        display: flex;
+        gap: 14px;
+        align-items: center;
+        color: var(--muted);
+        font-size: 13px;
+        white-space: nowrap;
+      }
+
+      .api-status {
+        font-weight: 600;
+        color: var(--muted);
+      }
+
+      .api-status.down {
+        color: var(--red);
+      }
+
+      /* ── Summary bar ────────────────────────────────────────────────── */
+      .summary {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 14px;
+      }
+
+      @media (max-width: 900px) {
+        .summary {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 520px) {
+        .summary {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      .card {
+        background: var(--card-bg);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 14px 16px;
+      }
+
+      .card .label {
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .card .value {
+        margin-top: 6px;
+        font-size: 22px;
+        font-weight: 700;
+      }
+
+      /* ── Panels ─────────────────────────────────────────────────────── */
+      .panel {
+        margin-top: 14px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        overflow: hidden;
+        background: #ffffff;
+      }
+
+      .panel-header {
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border);
+        font-weight: 700;
+      }
+
+      /* ── Scroll containers (no inline styles) ───────────────────────── */
+      .table-scroll {
+        overflow: auto;
+      }
+
+      /* ── Tables ─────────────────────────────────────────────────────── */
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      thead th {
+        text-align: left;
+        font-size: 12px;
+        color: var(--muted);
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+        background: #ffffff;
+        position: sticky;
+        top: 0;
+        z-index: 1;
+      }
+
+      tbody td {
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+        vertical-align: top;
+        font-size: 13px;
+      }
+
+      tbody tr:nth-child(even) {
+        background: var(--row-alt);
+      }
+
+      tbody tr:hover {
+        background: var(--row-hover);
+      }
+
+      tbody tr.selected {
+        background: var(--row-selected) !important;
+      }
+
+      .clickable {
+        cursor: pointer;
+      }
+
+      /* ── Badges / status colors ─────────────────────────────────────── */
+      .badge {
+        display: inline-block;
+        padding: 3px 8px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+        border: 1px solid var(--border);
+        background: #ffffff;
+      }
+
+      .badge.completed {
+        color: var(--green);
+        border-color: rgba(22, 163, 74, 0.25);
+        background: rgba(22, 163, 74, 0.08);
+      }
+
+      .badge.running {
+        color: var(--amber);
+        border-color: rgba(180, 83, 9, 0.25);
+        background: rgba(180, 83, 9, 0.08);
+      }
+
+      .badge.failed {
+        color: var(--red);
+        border-color: rgba(220, 38, 38, 0.25);
+        background: rgba(220, 38, 38, 0.08);
+      }
+
+      .status-text.moved {
+        color: var(--green);
+        font-weight: 700;
+      }
+
+      .status-text.skipped {
+        color: var(--grey);
+        font-weight: 700;
+      }
+
+      .status-text.error {
+        color: var(--red);
+        font-weight: 700;
+      }
+
+      /* ── Monospace paths ────────────────────────────────────────────── */
+      .path {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+          "Liberation Mono", "Courier New", monospace;
+        font-size: 12px;
+        word-break: break-all;
+      }
+
+      /* ── Detail panel ───────────────────────────────────────────────── */
+      #detailPanel {
+        display: none;
+      }
+
+      .detail-heading {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 14px;
+      }
+
+      .detail-meta {
+        font-size: 12px;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="container">
+      <div class="header">
+        <div class="title">Archive Dashboard</div>
+        <div class="header-right">
+          <div id="apiStatus" class="api-status">API available</div>
+          <div id="lastUpdated">Last updated: —</div>
+        </div>
+      </div>
+
+      <div class="summary" aria-label="Summary bar">
+        <div class="card">
+          <div class="label">Runs</div>
+          <div id="runsCount" class="value">—</div>
+        </div>
+        <div class="card">
+          <div class="label">Archived</div>
+          <div id="archivedCount" class="value">—</div>
+        </div>
+        <div class="card">
+          <div class="label">Skipped</div>
+          <div id="skippedCount" class="value">—</div>
+        </div>
+        <div class="card">
+          <div class="label">Errors</div>
+          <div id="errorsCount" class="value">—</div>
+        </div>
+      </div>
+
+      <div class="panel" aria-label="Runs">
+        <div class="panel-header">Runs Table</div>
+        <div class="table-scroll">
+          <table aria-label="Runs table">
+            <thead>
+              <tr>
+                <th>Group</th>
+                <th>Started</th>
+                <th>Duration</th>
+                <th>Moved</th>
+                <th>Skip</th>
+                <th>Err</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="runsTbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="detailPanel" class="panel" aria-label="Run detail">
+        <div class="panel-header">
+          <div class="detail-heading">
+            <div id="detailTitle">Run detail</div>
+            <div id="detailHint" class="detail-meta">Click a run to view file events.</div>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table aria-label="Run detail table">
+            <thead>
+              <tr>
+                <th>Source</th>
+                <th>Destination</th>
+                <th>Status</th>
+                <th>Reason</th>
+                <th>Timestamp</th>
+              </tr>
+            </thead>
+            <tbody id="detailTbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Stores the currently selected run id so we can preserve selection across polls.
+      let selectedRunId = null;
+
+      /**
+       * Formats an ISO timestamp into a compact local string for table display.
+       */
+      function formatDateTime(value) {
+        if (!value) {
+          return "—";
+        }
+        const d = new Date(value);
+        if (Number.isNaN(d.getTime())) {
+          return String(value);
+        }
+        return d.toLocaleString();
+      }
+
+      /**
+       * Formats a duration value (seconds) into a short "X.XXXs" string.
+       */
+      function formatDurationSeconds(value) {
+        if (value === null || value === undefined) {
+          return "—";
+        }
+        const n = Number(value);
+        if (Number.isNaN(n)) {
+          return "—";
+        }
+        return `${n.toFixed(3)}s`;
+      }
+
+      /**
+       * Updates the API availability indicator in the header.
+       */
+      function setApiStatus(isUp) {
+        const el = document.getElementById("apiStatus");
+        if (isUp) {
+          el.textContent = "API available";
+          el.classList.remove("down");
+        } else {
+          el.textContent = "API unavailable";
+          el.classList.add("down");
+        }
+      }
+
+      /**
+       * Updates the "Last updated" timestamp in the header as HH:MM:SS.
+       */
+      function setLastUpdatedNow() {
+        const now = new Date();
+        const hh = String(now.getHours()).padStart(2, "0");
+        const mm = String(now.getMinutes()).padStart(2, "0");
+        const ss = String(now.getSeconds()).padStart(2, "0");
+        document.getElementById("lastUpdated").textContent = `Last updated: ${hh}:${mm}:${ss}`;
+      }
+
+      /**
+       * Returns a badge element representing a run status.
+       */
+      function renderRunStatusBadge(status) {
+        const span = document.createElement("span");
+        span.className = `badge ${status}`;
+        span.textContent = status;
+        return span;
+      }
+
+      /**
+       * Builds and renders the runs table body and preserves selected row highlight.
+       */
+      function renderRunsTable(runs) {
+        const tbody = document.getElementById("runsTbody");
+        tbody.innerHTML = "";
+
+        for (const run of runs) {
+          const tr = document.createElement("tr");
+          tr.classList.add("clickable");
+          tr.setAttribute("data-run-id", String(run.id));
+
+          if (selectedRunId !== null && run.id === selectedRunId) {
+            tr.classList.add("selected");
+          }
+
+          tr.addEventListener("click", () => {
+            selectedRunId = run.id;
+            highlightSelectedRow();
+            fetchAndRenderRunDetail(run.id);
+          });
+
+          const tdGroup = document.createElement("td");
+          tdGroup.textContent = run.group_name;
+
+          const tdStarted = document.createElement("td");
+          tdStarted.textContent = formatDateTime(run.started_at);
+
+          const tdDuration = document.createElement("td");
+          tdDuration.textContent = formatDurationSeconds(run.duration_seconds);
+
+          const tdMoved = document.createElement("td");
+          tdMoved.textContent = String(run.total_moved);
+
+          const tdSkipped = document.createElement("td");
+          tdSkipped.textContent = String(run.total_skipped);
+
+          const tdErrors = document.createElement("td");
+          tdErrors.textContent = String(run.total_errors);
+
+          const tdStatus = document.createElement("td");
+          tdStatus.appendChild(renderRunStatusBadge(run.status));
+
+          tr.appendChild(tdGroup);
+          tr.appendChild(tdStarted);
+          tr.appendChild(tdDuration);
+          tr.appendChild(tdMoved);
+          tr.appendChild(tdSkipped);
+          tr.appendChild(tdErrors);
+          tr.appendChild(tdStatus);
+
+          tbody.appendChild(tr);
+        }
+      }
+
+      /**
+       * Applies the selected-row highlight to the current runs table.
+       */
+      function highlightSelectedRow() {
+        const tbody = document.getElementById("runsTbody");
+        const rows = tbody.querySelectorAll("tr");
+        for (const row of rows) {
+          row.classList.remove("selected");
+        }
+
+        if (selectedRunId === null) {
+          return;
+        }
+
+        // Re-apply selected class by matching the run id stored in a data attribute.
+        // (We store it during render so selection survives full table rebuilds.)
+        for (const row of rows) {
+          const rid = Number(row.getAttribute("data-run-id"));
+          if (!Number.isNaN(rid) && rid === selectedRunId) {
+            row.classList.add("selected");
+          }
+        }
+      }
+
+      /**
+       * Renders the run detail panel (file events) for a given run.
+       */
+      function renderRunDetail(runDetail) {
+        const panel = document.getElementById("detailPanel");
+        const title = document.getElementById("detailTitle");
+        const hint = document.getElementById("detailHint");
+        const tbody = document.getElementById("detailTbody");
+
+        const fileCount = Array.isArray(runDetail.files) ? runDetail.files.length : 0;
+        title.textContent = `Run #${runDetail.id} — ${runDetail.group_name} — ${fileCount} files`;
+        hint.textContent = "";
+
+        tbody.innerHTML = "";
+        for (const ev of runDetail.files || []) {
+          const tr = document.createElement("tr");
+
+          const tdSrc = document.createElement("td");
+          tdSrc.className = "path";
+          tdSrc.textContent = ev.source_path;
+
+          const tdDest = document.createElement("td");
+          tdDest.className = "path";
+          tdDest.textContent = ev.dest_path ? ev.dest_path : "—";
+
+          const tdStatus = document.createElement("td");
+          const statusSpan = document.createElement("span");
+          statusSpan.className = `status-text ${ev.status}`;
+          statusSpan.textContent = ev.status;
+          tdStatus.appendChild(statusSpan);
+
+          const tdReason = document.createElement("td");
+          tdReason.textContent = ev.reason ? ev.reason : "—";
+
+          const tdTs = document.createElement("td");
+          tdTs.textContent = formatDateTime(ev.timestamp);
+
+          tr.appendChild(tdSrc);
+          tr.appendChild(tdDest);
+          tr.appendChild(tdStatus);
+          tr.appendChild(tdReason);
+          tr.appendChild(tdTs);
+
+          tbody.appendChild(tr);
+        }
+
+        panel.style.display = "block";
+      }
+
+      /**
+       * Fetches and renders run detail for a given run id.
+       */
+      async function fetchAndRenderRunDetail(runId) {
+        try {
+          const res = await fetch(`/runs/${runId}`);
+          if (!res.ok) {
+            throw new Error(`HTTP ${res.status}`);
+          }
+          const data = await res.json();
+          renderRunDetail(data);
+        } catch (_err) {
+          // If detail fetch fails, keep the panel hidden to avoid showing stale data.
+          document.getElementById("detailPanel").style.display = "none";
+        }
+      }
+
+      /**
+       * Updates the four summary counters in the summary bar.
+       */
+      function renderStats(stats) {
+        document.getElementById("runsCount").textContent = String(stats.total_runs);
+        document.getElementById("archivedCount").textContent = String(stats.total_files_archived);
+        document.getElementById("skippedCount").textContent = String(stats.total_skipped);
+        document.getElementById("errorsCount").textContent = String(stats.total_errors);
+      }
+
+      /**
+       * Fetches /stats and /runs, updates the UI, refreshes selected run detail,
+       * and updates the last-updated timestamp without reloading the page.
+       */
+      async function fetchAndRender() {
+        try {
+          // Fetch global stats and update the summary cards.
+          const statsRes = await fetch("/stats");
+          if (!statsRes.ok) {
+            throw new Error(`HTTP ${statsRes.status}`);
+          }
+          const stats = await statsRes.json();
+          renderStats(stats);
+
+          // Fetch runs and rebuild the runs table.
+          const runsRes = await fetch("/runs");
+          if (!runsRes.ok) {
+            throw new Error(`HTTP ${runsRes.status}`);
+          }
+          const runs = await runsRes.json();
+          renderRunsTable(runs);
+
+          // Refresh detail panel if a run is currently selected.
+          if (selectedRunId !== null) {
+            await fetchAndRenderRunDetail(selectedRunId);
+          }
+
+          setApiStatus(true);
+          setLastUpdatedNow();
+        } catch (_err) {
+          // Graceful error handling: show API unavailable in the header.
+          setApiStatus(false);
+          document.getElementById("lastUpdated").textContent = "Last updated: —";
+        }
+      }
+
+      /**
+       * Initializes the dashboard polling loop and performs the first render.
+       */
+      function init() {
+        fetchAndRender();
+        setInterval(fetchAndRender, 10000);
+      }
+
+      // On page load, initialize polling.
+      init();
+    </script>
+  </body>
+</html>
+
