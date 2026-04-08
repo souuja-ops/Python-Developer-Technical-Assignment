@@ -1,0 +1,408 @@
+===============================================================
+SECTION 1 — PLANNING
+Ref: 60/2026 | Dew CIS Solutions Limited | ICT Department
+===============================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1A — DATABASE SCHEMA DESIGN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Two tables are needed: archive_runs and archive_events.
+
+RATIONALE:
+  - archive_runs holds one row per script invocation.
+    This answers: when did each run happen, which group was
+    processed, how many files were moved/skipped/errored,
+    how long it took, and whether it completed or failed.
+
+  - archive_events holds one row per file, written immediately
+    as each file is processed (not batched at the end).
+    This answers: which files were moved, from where, to where,
+    which were skipped or errored, and why — and ensures partial
+    results are visible even if a run is interrupted midway.
+
+  - Two runs on the same group produce two separate rows in
+    archive_runs with different id and started_at values,
+    making them fully distinguishable.
+
+---------------------------------------------------------------
+TABLE 1: archive_runs
+---------------------------------------------------------------
+
+  Column            Type                    Notes
+  ────────────────────────────────────────────────────────────
+  id                SERIAL PRIMARY KEY      Auto-incremented.
+                                            Unique run identifier.
+
+  group_name        VARCHAR(255) NOT NULL   The Linux group that
+                                            was archived.
+
+  started_at        TIMESTAMPTZ NOT NULL    Set at the moment the
+                    DEFAULT NOW()           script starts.
+
+  finished_at       TIMESTAMPTZ             NULL while running.
+                                            Set when run ends
+                                            (completed or failed).
+
+  duration_seconds  NUMERIC(10, 3)          Calculated as:
+                                            EXTRACT(EPOCH FROM
+                                            finished_at - started_at)
+
+  total_moved       INTEGER DEFAULT 0       Count of files moved.
+
+  total_skipped     INTEGER DEFAULT 0       Count of files skipped.
+
+  total_errors      INTEGER DEFAULT 0       Count of files errored.
+
+  status            VARCHAR(20)             Values:
+                    DEFAULT 'running'         'running'
+                                              'completed'
+                                              'failed'
+
+---------------------------------------------------------------
+TABLE 2: archive_events
+---------------------------------------------------------------
+
+  Column        Type                Notes
+  ────────────────────────────────────────────────────────────
+  id            SERIAL PRIMARY KEY  Auto-incremented.
+                                    Unique event identifier.
+
+  run_id        INTEGER NOT NULL    Foreign key → archive_runs(id)
+                REFERENCES          ON DELETE CASCADE.
+                archive_runs(id)    Links every file back to
+                ON DELETE CASCADE   its parent run.
+
+  source_path   TEXT NOT NULL       Absolute path of the file
+                                    before it was moved.
+
+  dest_path     TEXT                Absolute path after move.
+                                    NULL for error events where
+                                    the move never happened.
+
+  status        VARCHAR(20)         Values:
+                NOT NULL              'moved'
+                                      'skipped'
+                                      'error'
+
+  reason        TEXT                NULL for moved files.
+                                    Populated for skipped/error
+                                    e.g. 'already archived' or
+                                    'Permission denied'.
+
+  timestamp     TIMESTAMPTZ         When this specific file
+                NOT NULL            was processed.
+                DEFAULT NOW()
+
+---------------------------------------------------------------
+SCHEMA ANSWERS THE REQUIRED QUESTIONS:
+---------------------------------------------------------------
+
+  Q: When did each run happen, and which group?
+  A: archive_runs.started_at + archive_runs.group_name
+
+  Q: How many files moved/skipped/errored, and how long?
+  A: archive_runs.total_moved, total_skipped, total_errors,
+     duration_seconds
+
+  Q: Which files were moved — from where, to where, when?
+  A: archive_events WHERE status = 'moved'
+     → source_path, dest_path, timestamp
+
+  Q: Which files were skipped or errored, and why?
+  A: archive_events WHERE status IN ('skipped', 'error')
+     → source_path, status, reason
+
+  Q: Are partial results visible if a run fails midway?
+  A: YES. Each file event is written immediately via write_event()
+     before moving to the next file. If the run is interrupted,
+     all events written so far remain in archive_events.
+     The run row stays with status='running' until finish_run()
+     is called, making the partial state visible.
+
+  Q: Can you distinguish two runs of the same group?
+  A: YES. Each invocation creates a new archive_runs row with
+     a unique id and a different started_at timestamp.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1B — API ENDPOINT MAPPING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+---------------------------------------------------------------
+ENDPOINT 1: GET /runs
+---------------------------------------------------------------
+  Returns  : Array of all runs, summary fields, most recent first.
+
+  Response fields:
+    id, group_name, started_at, finished_at, duration_seconds,
+    total_moved, total_skipped, total_errors, status
+
+  SQL:
+    SELECT
+        id,
+        group_name,
+        started_at,
+        finished_at,
+        duration_seconds,
+        total_moved,
+        total_skipped,
+        total_errors,
+        status
+    FROM archive_runs
+    ORDER BY started_at DESC;
+
+  Key SQL concept: SELECT from archive_runs
+
+---------------------------------------------------------------
+ENDPOINT 2: GET /runs/{id}
+---------------------------------------------------------------
+  Returns  : Single run (all summary fields) + a 'files' array
+             containing every file event for that run.
+
+  Response fields (run):
+    id, group_name, started_at, finished_at, duration_seconds,
+    total_moved, total_skipped, total_errors, status
+
+  Response fields (each file in 'files' array):
+    id, run_id, source_path, dest_path, status, reason, timestamp
+
+  SQL:
+    SELECT
+        r.id            AS run_id,
+        r.group_name,
+        r.started_at,
+        r.finished_at,
+        r.duration_seconds,
+        r.total_moved,
+        r.total_skipped,
+        r.total_errors,
+        r.status        AS run_status,
+        e.id            AS event_id,
+        e.source_path,
+        e.dest_path,
+        e.status        AS file_status,
+        e.reason,
+        e.timestamp
+    FROM archive_runs r
+    LEFT JOIN archive_events e ON e.run_id = r.id
+    WHERE r.id = %(run_id)s;
+
+  Error handling:
+    If run_id does not exist → HTTP 404
+    { "detail": "Run {id} not found" }
+
+  Key SQL concept: JOIN archive_runs + archive_events
+
+---------------------------------------------------------------
+ENDPOINT 3: GET /runs/{id}/files
+---------------------------------------------------------------
+  Returns  : File events for a specific run.
+             Supports optional query param: ?status=moved
+                                            ?status=skipped
+                                            ?status=error
+
+  Response fields (each file):
+    id, run_id, source_path, dest_path, status, reason, timestamp
+
+  SQL (without filter):
+    SELECT *
+    FROM archive_events
+    WHERE run_id = %(run_id)s
+    ORDER BY timestamp ASC;
+
+  SQL (with ?status= filter):
+    SELECT *
+    FROM archive_events
+    WHERE run_id = %(run_id)s
+      AND status = %(status)s
+    ORDER BY timestamp ASC;
+
+  Error handling:
+    If run_id does not exist → HTTP 404
+    { "detail": "Run {id} not found" }
+
+  Key SQL concept: WHERE status = ?
+
+---------------------------------------------------------------
+ENDPOINT 4: GET /stats
+---------------------------------------------------------------
+  Returns  : Aggregated statistics across all runs.
+
+  Response fields:
+    total_runs, total_files_archived, total_skipped,
+    total_errors, most_recent_group, busiest_group
+
+  SQL queries (run in a single DB connection):
+
+    -- Total number of runs
+    SELECT COUNT(*) AS total_runs
+    FROM archive_runs;
+
+    -- Total files archived across all runs
+    SELECT COALESCE(SUM(total_moved), 0) AS total_files_archived
+    FROM archive_runs;
+
+    -- Total skipped across all runs
+    SELECT COALESCE(SUM(total_skipped), 0) AS total_skipped
+    FROM archive_runs;
+
+    -- Total errors across all runs
+    SELECT COALESCE(SUM(total_errors), 0) AS total_errors
+    FROM archive_runs;
+
+    -- Most recently archived group
+    SELECT group_name AS most_recent_group
+    FROM archive_runs
+    ORDER BY started_at DESC
+    LIMIT 1;
+
+    -- Group with the most files archived (busiest)
+    SELECT group_name AS busiest_group
+    FROM archive_runs
+    GROUP BY group_name
+    ORDER BY SUM(total_moved) DESC
+    LIMIT 1;
+
+  Key SQL concept: SUM / COUNT / GROUP BY
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1C — ROBUSTNESS CASES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+---------------------------------------------------------------
+CASE 1: Group does not exist on the system
+---------------------------------------------------------------
+  Detection:
+    grp.getgrnam(group_name) raises KeyError when the group
+    is not found in /etc/group.
+
+  Handling:
+    → Catch KeyError.
+    → Print to stderr:
+        "Error: group '{name}' not found on this system."
+    → Call finish_run(run_id, 0, 0, 0, 'failed') so the run
+      record is closed properly in the database.
+    → sys.exit(1) — non-zero exit code, no traceback.
+
+  Why this way:
+    A missing group is a user input error, not a system crash.
+    The examiner must see a clean, readable message and a
+    non-zero exit code that scripts can detect.
+
+---------------------------------------------------------------
+CASE 2: Group exists but has no members
+---------------------------------------------------------------
+  Detection:
+    grp.getgrnam(group_name).gr_mem returns an empty list [].
+
+  Handling:
+    → Print to stdout:
+        "Group '{name}' has no members. Nothing to archive."
+    → Call finish_run(run_id, 0, 0, 0, 'completed') — this is
+      not a failure, just a no-op run.
+    → sys.exit(0) — clean exit.
+
+  Why this way:
+    An empty group is a valid state, not an error. The run is
+    recorded so there is an audit trail that the group was
+    checked and had nothing to process.
+
+---------------------------------------------------------------
+CASE 3: Member's home directory does not exist
+---------------------------------------------------------------
+  Detection:
+    os.path.isdir(home_dir) returns False for a member's
+    home directory path from pwd.getpwnam(uid).pw_dir.
+
+  Handling:
+    → Log a warning to stdout:
+        "Warning: home directory '{path}' for user '{uid}'
+         does not exist. Skipping."
+    → Skip that member entirely — do not attempt os.walk().
+    → Do not write any archive_events rows for that member.
+    → Continue processing remaining group members.
+
+  Why this way:
+    A missing home directory is not uncommon on real systems
+    (user created but never logged in). The run should still
+    process all other members successfully.
+
+---------------------------------------------------------------
+CASE 4: A file cannot be read due to permissions
+---------------------------------------------------------------
+  Detection:
+    shutil.move() or os.makedirs() raises PermissionError
+    or OSError when processing a specific file.
+
+  Handling:
+    → Catch PermissionError and OSError per file.
+    → Call write_event(run_id, src, None, 'error',
+        reason=str(exception)) immediately.
+    → Increment the error counter.
+    → Print to stdout:
+        "[ERROR] /path/to/file (Permission denied)"
+    → Continue processing remaining files — do NOT abort
+      the run.
+    → The run completes with status='completed' and a
+      non-zero total_errors count.
+
+  Why this way:
+    One unreadable file should never stop the entire run.
+    The error is recorded with its reason so it can be
+    investigated later via the API or dashboard.
+
+---------------------------------------------------------------
+CASE 5: Same group archived a second time
+        (files already at destination)
+---------------------------------------------------------------
+  Detection:
+    Before calling shutil.move(), check:
+      os.path.exists(dest_path) returns True.
+
+  Handling:
+    → Do NOT overwrite the file.
+    → Call write_event(run_id, src, dest_path, 'skipped',
+        reason='already archived') immediately.
+    → Increment the skipped counter.
+    → Print to stdout:
+        "[SKIPPED] /path/to/file (already archived)"
+    → Continue to next file.
+
+  Why this way:
+    The archiver must be safe to run multiple times (idempotent).
+    Overwriting would risk data loss. Two separate run records
+    are created so the history of both runs is preserved.
+
+---------------------------------------------------------------
+CASE 6: Database connection fails during a run
+---------------------------------------------------------------
+  Detection:
+    psycopg2.OperationalError is raised when attempting to
+    connect or during any database operation mid-run.
+
+  Handling — connection fails at startup (before run starts):
+    → Catch psycopg2.OperationalError at the top level.
+    → Print to stderr:
+        "Error: could not connect to the database.
+         Check DB_HOST, DB_PORT, DB_USER, DB_PASSWORD."
+    → sys.exit(1).
+
+  Handling — connection fails mid-run (after run_id exists):
+    → The try/finally block ensures finish_run() is attempted.
+    → If finish_run() also fails (DB still down), the partial
+      run record remains in archive_runs with status='running'
+      and all events written so far remain in archive_events.
+    → This partial state is intentional and visible — the
+      examiner can query the DB to see what was processed
+      before the failure.
+
+  Why this way:
+    Partial visibility is more valuable than hiding an
+    incomplete run. The status='running' flag signals that
+    the run did not complete cleanly.
+
+===============================================================
+END OF SECTION 1 — PLANNING
+===============================================================
